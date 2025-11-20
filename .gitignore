@@ -1,0 +1,16 @@
+# Python 垃圾與虛擬環境
+backend/venv/
+backend/__pycache__/
+*.pyc
+
+# 資料庫 (通常不建議上傳二進位檔，讓使用者自己重建)
+*.db
+*.sqlite3
+
+# Mac 系統垃圾檔
+.DS_Store
+
+# React 前端垃圾與依賴包 (這最重要，不然會傳很久)
+frontend/node_modules/
+frontend/dist/
+frontend/.env
