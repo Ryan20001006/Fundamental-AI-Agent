@@ -25,7 +25,7 @@ app.add_middleware(
 
 DB_NAME = "stock.db"
 
-GOOGLE_API_KEY = "AIzaSyDlxLwoUYN9_JiJkB1zD25ZNYSKW78a1JI"
+GOOGLE_API_KEY = "USE YOUR OWN API KEY"
 genai.configure(api_key=GOOGLE_API_KEY)
 
 class StockRequest(BaseModel):
@@ -107,7 +107,7 @@ def download_and_store_fundamentals(stock_id):
     finally:
         conn.close()
 
-# --- 補上這個 Helper 函式，您的程式碼依賴它 ---
+# --- Helper Function ---
 def get_dataframes_from_db(stock_id, conn):
     query = "SELECT StatementType, Item, ReportDate, Value FROM FinancialStatements WHERE Stock_Id = ?"
     df_all = pd.read_sql(query, conn, params=(stock_id,))
@@ -127,8 +127,7 @@ def get_dataframes_from_db(stock_id, conn):
 
 def calculate_financial_ratios(stock_id, conn):
     """
-    (AI 工具 1 - 專業完整版)
-    提取全面的財務數據，計算四大類關鍵比率，並存入資料庫。
+    This is the AI Financial Ratio Calculator
     """
     print(f"--- Analysing {stock_id} Historical Financial Data ---")
 
@@ -263,7 +262,7 @@ def calculate_financial_ratios(stock_id, conn):
             except KeyError:
                 pass
 
-    # C. 儲存結果
+    # C. Save the results
     if ratios_to_save:
         cursor.executemany('''
         INSERT OR IGNORE INTO CalculatedRatios
@@ -284,7 +283,7 @@ def get_context_str(stock_id):
     finally:
         conn.close()
 # ==========================================
-# 3. API 路由
+# 3. API 
 # ==========================================
 
 @app.on_event("startup")
@@ -315,7 +314,7 @@ def memo(req: StockRequest):
     ticker = req.ticker.upper()
     context = get_context_str(ticker)
     
-    model = genai.GenerativeModel("gemini-2.5-pro")
+    model = genai.GenerativeModel("gemini-2.5-flash")
     prompt = f"Act as a fund manager. Write a short investment memo for {ticker} based on this data:\n{context}"
     
     try:
@@ -323,3 +322,91 @@ def memo(req: StockRequest):
         return {"memo": res.text}
     except Exception as e:
         return {"memo": f"Error generating memo: {str(e)}"}
+    
+#4. AI Agent
+
+class ChatRequest(BaseModel):
+    message: str
+
+def extract_ticker_from_text(text: str):
+    """
+    This is where the AI Agent will determine if the data needs to be downloaded.
+    """
+
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    prompt = f"""
+    You are a financial AI agent. Extract the stock ticker symbol from the user's query.
+    If the user mentions a company name (e.g., "Apple", "Shell", "TSMC"), convert it to the correct Yahoo Finance ticker (e.g., AAPL, SHEL.L, 2330.TW).
+    
+    User Query: "{text}"
+    
+    Output ONLY the ticker string (e.g., AAPL). 
+    If no company is mentioned or the intent is unclear, output "NONE".
+    """
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except:
+        return "NONE"
+
+@app.post("/api/agent-chat")
+def agent_chat(req: ChatRequest):
+    user_msg = req.message
+    print(f"Agent message received: {user_msg}")
+    
+    # 步驟 A: 思考 (意圖識別)
+    ticker = extract_ticker_from_text(user_msg)
+    print(f"Ticker: {ticker}")
+    
+    # 如果 AI 聽不懂或是使用者只是在閒聊
+    if ticker == "NONE":
+        
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        chat_reply = model.generate_content(f"You are a helpful financial assistant. The user said: '{user_msg}'. Respond politely that you can help analyze stocks if they provide a company name.").text
+        return {
+            "status": "chat", 
+            "message": chat_reply
+        }
+    
+    # 步驟 B: 行動 (使用既有的分析工具)
+    try:
+        # 1. 呼叫我們原本寫好的下載函式
+        download_success = download_and_store_fundamentals(ticker)
+        if not download_success:
+             return {"status": "chat", "message": f"抱歉，我找到了代碼 {ticker}，但無法從資料源獲取它的詳細數據。"}
+
+        # 2. 呼叫原本的計算函式
+        conn = get_db_connection()
+        calculate_financial_ratios(ticker, conn)
+        
+        # 3. 撈取數據回傳給前端畫圖
+        df = pd.read_sql("SELECT * FROM CalculatedRatios WHERE Stock_Id = ?", conn, params=(ticker,))
+        conn.close()
+        
+        data_records = df.to_dict(orient="records")
+        
+        # 4. 生成最終的 Agent 回覆 (基於數據)
+        context = get_context_str(ticker)
+        model = genai.GenerativeModel("gemini-2.5-flash") # 或用 gemini-2.5-pro
+        
+        final_prompt = f"""
+        User Question: '{user_msg}'
+        
+        Based on the following financial data for {ticker}:
+        {context}
+        
+        Please provide a concise answer to the user's question and a brief investment summary.
+        Use Markdown format for bolding key numbers.
+        """
+        final_response = model.generate_content(final_prompt)
+        
+        return {
+            "status": "analysis_complete",
+            "ticker": ticker,
+            "data": data_records,
+            "reply": final_response.text
+        }
+        
+    except Exception as e:
+        print(f"Agent Error: {e}")
+        return {"status": "error", "message": f"分析過程中發生錯誤: {str(e)}"}

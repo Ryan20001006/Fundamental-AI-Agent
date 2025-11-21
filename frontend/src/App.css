@@ -1,156 +1,224 @@
-/* === src/App.css === */
-
-/* 1. 強制讓網頁佔滿版面，並設定背景 */
 :root {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  line-height: 1.4;
+  font-family: 'Inter', system-ui, sans-serif;
+  line-height: 1.5;
+  background-color: #f0f2f5; /* 柔和的灰背景 */
   color: #333;
-  background-color: #f8f9fa; /* 乾淨的灰白背景 */
 }
 
 body {
   margin: 0;
   padding: 0;
+  display: block;
   width: 100%;
-  display: block; /* 確保不是預設的 flex 導致跑版 */
 }
 
-/* 2. 關鍵修正：最外層容器置中 */
+/* 1. 主容器置中設定 */
 .container {
-  max-width: 1200px;     /* 限制最大寬度，太寬不好看 */
-  width: 90%;            /* 在手機版保留左右一點邊距 */
-  margin: 40px auto;     /* 關鍵！上下40px，左右自動(置中) */
-  padding: 0;            /* 清除多餘內距 */
+  max-width: 1400px;     /* 限制最大寬度 */
+  width: 90%;            /* 手機版保留邊距 */
+  margin: 40px auto;     /* 上下 40px，左右自動置中 */
+  padding: 0;
+  min-height: 90vh;      /* 至少佔滿 90% 高度 */
+  display: flex;
+  flex-direction: column;
 }
 
-/* 3. 標題與說明 */
 h1 {
-  font-size: 2.5rem;
-  color: #1e3a8a; /* 深藍色 */
-  text-align: center; /* 文字置中 */
+  text-align: center;
+  color: #1e3a8a;
   margin-bottom: 30px;
+  font-size: 2rem;
   font-weight: 800;
 }
 
-p {
-  text-align: center;
-  color: #666;
-}
-
-/* 4. 搜尋框區塊 (也要置中) */
-.search-box {
+/* 2. 核心佈局：讓聊天和圖表並排且置中 */
+.main-layout {
   display: flex;
-  gap: 10px;
-  background: white;
-  padding: 15px 20px;
-  border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  
-  /* 關鍵：搜尋框自己在容器內也要置中 */
-  max-width: 600px;
-  margin: 0 auto 40px auto; 
+  gap: 30px;             /* 兩個區塊的間距 */
+  justify-content: center; /* 關鍵：讓內部內容水平置中 */
+  align-items: flex-start; /* 頂部對齊 */
+  width: 100%;
 }
 
-input {
+/* --- 左側：聊天室 --- */
+.chat-section {
+  flex: 1;               /* 佔用 1 等份空間 */
+  display: flex;
+  flex-direction: column;
+  background: white;
+  border-radius: 20px;   /* 更圓潤的邊角 */
+  box-shadow: 0 10px 25px rgba(0,0,0,0.05); /* 更漂亮的陰影 */
+  max-width: 500px;      /* 限制聊天室最大寬度 */
+  height: 700px;         /* 固定高度 */
+  border: 1px solid black;
+}
+
+.chat-window {
   flex: 1;
-  padding: 12px 16px;
-  font-size: 16px;
+  overflow-y: auto;      /* 內容多時可捲動 */
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.message-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.message-row.user {
+  flex-direction: row-reverse;
+}
+
+.avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 18px;
+}
+
+.bubble {
+  padding: 12px 18px;
+  border-radius: 18px;
+  max-width: 85%;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.03);
+}
+
+.bubble.agent {
+  background: #f8fafc;
+  color: #334155;
+  border-top-left-radius: 4px;
+}
+
+.bubble.user {
+  background: #2563eb; /* 鮮豔的藍色 */
+  color: white;
+  border-top-right-radius: 4px;
+}
+
+/* 輸入區域 */
+.input-area {
+  padding: 20px;
+  border-top: 1px solid #f1f5f9;
+  display: flex;
+  gap: 12px;
+  background-color: #fff;
+  border-bottom-left-radius: 20px;
+  border-bottom-right-radius: 20px;
+}
+
+.input-area input {
+  flex: 1;
+  padding: 12px 20px;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border-radius: 30px; /* 膠囊狀輸入框 */
   outline: none;
-  color: #333;
+  font-size: 1rem;
+  background-color: #f8fafc;
+  transition: border-color 0.2s;
+  color: #333; 
+  background-color: #fff;
+  
+  transition: border-color 0.2s;
+}
+
+.input-area input:focus {
+  border-color: #2563eb;
   background-color: #fff;
 }
 
-button {
-  padding: 12px 24px;
-  font-size: 16px;
-  font-weight: 600;
-  background-color: #1e40af;
-  color: white;
+.input-area button {
+  background: #2563eb;
+  color: black;
   border: none;
-  border-radius: 8px;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background-color 0.2s;
 }
 
-button:hover {
-  background-color: #1e3a8a;
-  transform: translateY(-1px);
+.input-area button:hover {
+  background-color: #1d4ed8;
 }
 
-button:disabled {
-  background-color: #94a3b8;
-  cursor: not-allowed;
-}
-
-/* 5. 儀表板佈局 */
-.dashboard {
-  display: grid;
-  grid-template-columns: 1fr 1fr; /* 左右各 50% */
-  gap: 30px;
-  align-items: start;
-}
-
-/* 左側圖表欄 */
-.charts-column {
+/* --- 右側：儀表板 (有數據時才出現) --- */
+.dashboard-section {
+  flex: 1.2;             /* 佔用 1.2 等份 (比聊天室寬一點) */
+  max-width: 700px;      /* 限制最大寬度 */
   display: flex;
   flex-direction: column;
-  gap: 30px; /* 圖表之間的距離 */
+  gap: 20px;
 }
 
-/* 卡片樣式 (圖表 & 報告) */
-.chart, .memo {
+.dashboard-header h2 {
+  margin: 0 0 20px 0;
+  color: #1e293b;
+  font-size: 1.5rem;
+  text-align: center;    /* 標題置中 */
+}
+
+.charts-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  height: 700px;         /* 與聊天室同高 */
+  overflow-y: auto;      /* 太多圖表時可捲動 */
+  padding-right: 5px;    /* 預留捲軸空間 */
+}
+
+.chart-card {
   background: white;
-  padding: 30px;
-  border-radius: 16px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-  border: 1px solid #eee;
+  padding: 25px;
+  border-radius: 20px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+  border: 1px solid #eef2f6;
 }
 
-h3 {
-  margin-top: 0;
+.chart-card h3 {
+  margin: 0 0 20px 0;
   color: #475569;
-  font-size: 1.2rem;
-  font-weight: 700;
-  margin-bottom: 20px;
-  border-bottom: 2px solid #f1f5f9;
+  font-size: 1.1rem;
+  border-bottom: 1px solid #f1f5f9;
   padding-bottom: 10px;
 }
 
-/* AI 報告美化 */
-.memo {
-  border-left: 5px solid #2563eb; /* 藍色裝飾線 */
+.spin {
+  animation: spin 1s linear infinite;
+  margin-right: 8px;
 }
 
-.markdown {
-  font-size: 16px;
-  line-height: 1.4;
-  color: #334155;
-  text-align: justify;
+@keyframes spin { 
+  from { transform: rotate(0deg); } 
+  to { transform: rotate(360deg); } 
 }
 
-/* 報告內的標題 */
-.markdown h1, .markdown h2 {
-  margin-top: 20px;
-  color: #1e293b;
-  font-size: 1.1rem;
-  font-weight: bold;
-}
-
-.markdown ul {
-  padding-left: 20px;
-  margin: 10px 0;
-}
-
-/* 手機版響應式調整 */
-@media (max-width: 768px) {
-  .dashboard {
-    grid-template-columns: 1fr; /* 手機版變單欄 */
+/* RWD: 手機版變直列 */
+@media (max-width: 1000px) {
+  .main-layout {
+    flex-direction: column;
+    align-items: center; /* 手機版垂直置中 */
   }
   
-  .container {
-    width: 95%;
-    margin: 20px auto;
+  .chat-section, .dashboard-section {
+    max-width: 100%;
+    width: 100%;
+    height: auto;
+  }
+
+  .chat-section {
+    height: 600px; /* 手機版固定高度 */
   }
 }
