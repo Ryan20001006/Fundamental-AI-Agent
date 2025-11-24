@@ -1,4 +1,4 @@
-# 🚀 Fundamental AI Agent: Advanced Financial Analysis & Valuation
+# Fundamental AI Agent: Advanced Financial Analysis & Valuation
 
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.109-009688?logo=fastapi)
@@ -11,33 +11,33 @@
 
 ---
 
-## ✨ Key Features & Advanced Models
+## Key Features & Advanced Models
 
-### 📊 Comprehensive Financial Analysis
+### Comprehensive Financial Analysis
 Extracts historical Balance Sheet, Income Statement, and Cash Flow data (2021-2024) via `yfinance` and calculates over 16 core financial ratios, including:
 * **Profitability**: ROE, ROIC, Gross Margin, Net Profit Margin.
 * **Leverage**: Debt-to-Equity Ratio, Interest Coverage, Net Debt/EBITDA.
 * **Efficiency**: Asset Turnover, Inventory Turnover, Receivables Turnover.
 * **Growth**: Revenue Growth, EPS Growth, FCF Growth.
 
-### 💰 Advanced DCF Valuation Engine (New)
+### Advanced DCF Valuation Engine (New)
 The backend incorporates a high-fidelity Discounted Cash Flow (DCF) model for intrinsic value estimation:
 * **Cost of Equity (CoE)**: Calculated using the **Fama-French 3-Factor Model** for precise risk adjustment.
 * **Future FCF Projection**: Estimated using **Analyst Forward EPS** combined with the company's historical **Cash Conversion Ratio** (FCF/Net Income).
 * **Conservative Growth**: Uses a **0.0% perpetual growth rate** assumption, ideal for mature industries (e.g., Energy) to ensure robust valuation.
 
-### 🤖 Conversational AI Agent (Gemini)
+### Conversational AI Agent (Gemini)
 * **Intent Recognition**: Uses Gemini to accurately parse natural language queries (including Chinese) and extract the correct US stock ticker (e.g., "Analyze Shell" → SHEL).
 * **Memo Generation**: Synthesizes the 16 historical ratios and the DCF valuation result into a professional, concise investment thesis and recommendation.
 
-### 💻 Tech Stack & Infrastructure
+### Tech Stack & Infrastructure
 * **Frontend**: React (Vite) for a responsive, modern chat interface and **Recharts** for visualizing ratio trends.
 * **Backend**: FastAPI (Python) for a highly efficient RESTful API.
 * **Data Persistence**: SQLite database for local caching of financial data, reducing API call frequency.
 
 ---
 
-## 🛠️ Getting Started
+## Getting Started
 
 ### Prerequisites
 * Node.js (v18+)
