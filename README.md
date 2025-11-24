@@ -47,7 +47,7 @@ The backend incorporates a high-fidelity Discounted Cash Flow (DCF) model for in
 ### 1. Setup & Installation
 ```bash
 # Clone the repository
-git clone [YOUR-REPO-URL]
+git clone [https://github.com/Ryan20001006/Fundamental-AI-Agent]
 cd Fundamental-AI-Agent
 
 # Install Python dependencies (requires statsmodels for Fama-French)
