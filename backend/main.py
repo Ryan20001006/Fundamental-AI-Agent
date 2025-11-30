@@ -9,6 +9,10 @@ import statsmodels.api as sm
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import asyncio
+from google.adk.agents import Agent
+from google.adk.runners import InMemoryRunner
+from google.adk.tools import google_search
 
 # ==========================================
 # 1. 設定與初始化
@@ -27,7 +31,7 @@ app.add_middleware(
 DB_NAME = "stock.db"
 
 # ⚠️ 請確認 API Key 是否正確
-GOOGLE_API_KEY = "AIzaSyA_ITRbmHfB1yT2HBoAa_JK553MlrK1fgk" 
+GOOGLE_API_KEY = "AIzaSyDqlHBHTSeFke19svrt1qRhjMmdkRgIBjU" 
 # 如果您的 Key 已經在環境變數或直接寫死，請確認這裡有值
 if GOOGLE_API_KEY and "YOUR" not in GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
@@ -72,6 +76,15 @@ def create_fundamental_tables():
         UNIQUE(Stock_Id, ReportYear, RatioName)
     );''')
     
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS AIReports (
+        Stock_Id TEXT,
+        ReportDate DATE,
+        NewsAnalysis TEXT,
+        CompetitorAnalysis TEXT,
+        PRIMARY KEY (Stock_Id, ReportDate)
+    );''')
+
     conn.commit()
     conn.close()
 
@@ -135,9 +148,9 @@ def get_dataframes_from_db(stock_id, conn):
 
 def calculate_financial_ratios(stock_id, conn):
     """
-    (專業完整版) 計算 16 個關鍵財務指標
+    (混合版) 優先使用 Yahoo 現成數據 (Info) 填補最新年份，歷史數據維持自算
     """
-    print(f"--- [專業版] 正在分析 {stock_id} 的全方位歷史財務比率 ---")
+    print(f"--- [混合版] 正在分析 {stock_id} (優先對齊 Yahoo 現成數據) ---")
     df_income, df_balance, df_cashflow = get_dataframes_from_db(stock_id, conn)
 
     if df_income is None or df_balance is None or df_cashflow is None:
@@ -147,64 +160,152 @@ def calculate_financial_ratios(stock_id, conn):
     all_years = df_income.index.sort_values(ascending=False)
     cursor = conn.cursor()
 
+    # 1. 提取 Yahoo Info (來自 CompanyInfo 表)
+    # 我們抓取最新的一筆紀錄，轉成字典方便查詢
+    cursor.execute("""
+        SELECT DataKey, DataValue FROM CompanyInfo 
+        WHERE Stock_Id = ? 
+        ORDER BY QueryDate DESC
+    """, (stock_id,))
+    
+    # 建立 Info 字典
+    yahoo_info = {row[0]: row[1] for row in cursor.fetchall()}
+
+    # 2. 定義 Yahoo Info 的對應表 (我們名稱 -> Yahoo Key)
+    # 這些 Key 對應您截圖中的數據
+    yahoo_mapping = {
+        'Gross Margin': 'grossMargins',
+        'Operating Margin': 'operatingMargins',       #
+        'Net Profit Margin': 'profitMargins',         #
+        'Return on Equity (ROE)': 'returnOnEquity',   #
+        'Debt-to-Equity Ratio': 'debtToEquity',       #
+        'Current Ratio': 'currentRatio',              #
+        'Revenue Growth': 'revenueGrowth',            #
+        'EPS Growth': 'earningsGrowth'
+    }
+
+    latest_year = all_years[0] if len(all_years) > 0 else 0
+
     for year in all_years:
         if year not in df_balance.index: continue
 
         try:
+            # 小工具：從 DataFrame 取值
             def get_val(df, y, item): 
                 return df.loc[y, item] if item in df.columns else np.nan
 
-            # 損益表
+            # 先把基礎數據取出來 (計算公式仍需要用到部分數據)
             revenue = get_val(df_income, year, 'Total Revenue')
             gross_profit = get_val(df_income, year, 'Gross Profit')
             op_income = get_val(df_income, year, 'Operating Income')
             net_income = get_val(df_income, year, 'Net Income')
-            cost_of_revenue = get_val(df_income, year, 'Cost Of Revenue')
-            interest_expense = get_val(df_income, year, 'Interest Expense')
-            ebitda = get_val(df_income, year, 'EBITDA')
-            basic_eps = get_val(df_income, year, 'Basic EPS')
-
-            # 資產負債表
-            total_assets = get_val(df_balance, year, 'Total Assets')
             total_equity = get_val(df_balance, year, 'Total Equity Gross Minority Interest')
             total_debt = get_val(df_balance, year, 'Total Debt')
-            net_debt = get_val(df_balance, year, 'Net Debt')
-            inventory = get_val(df_balance, year, 'Inventory')
-            accounts_receivable = get_val(df_balance, year, 'Accounts Receivable')
             current_assets = get_val(df_balance, year, 'Current Assets')
             current_liabilities = get_val(df_balance, year, 'Current Liabilities')
             invested_capital = get_val(df_balance, year, 'Invested Capital')
+            
+            # --- [核心邏輯] 定義一個函式來決定用誰的數據 ---
+            def get_ratio_value(ratio_name, calculated_value):
+                """
+                如果:
+                1. 現在是最新一年 (year == latest_year)
+                2. Yahoo Info 裡面有這個欄位
+                3. Yahoo 的值有效
+                => 則回傳 Yahoo 的值 (優先權高)
+                => 否則回傳 calculated_value (自算值)
+                """
+                # 只有最新一年才嘗試用 Yahoo Info (因為 Info 是 TTM 或 Current)
+                if year == latest_year and ratio_name in yahoo_mapping:
+                    y_key = yahoo_mapping[ratio_name]
+                    
+                    # 檢查 Info 裡有沒有這個值且不是 'None'
+                    if y_key in yahoo_info and yahoo_info[y_key] and yahoo_info[y_key] != 'None':
+                        try:
+                            y_val = float(yahoo_info[y_key])
+                            
+                            # [特別處理] 單位換算
+                            # Yahoo 的 DebtToEquity 是 41.60 (代表 41.6%)，需轉成 0.416
+                            if y_key == 'debtToEquity':
+                                y_val = y_val / 100
+                            
+                            # Debug 訊息 (可選)
+                            # print(f"   ★ {ratio_name}: 使用 Yahoo 數據 {y_val} 替代自算 {calculated_value}")
+                            return y_val
+                        except:
+                            pass # 轉換失敗就繼續用算的
+                
+                return calculated_value
 
-            # 現金流量表
-            ocf = np.nan
-            fcf = np.nan
-            if year in df_cashflow.index:
-                ocf = get_val(df_cashflow, year, 'Operating Cash Flow')
-                fcf = get_val(df_cashflow, year, 'Free Cash Flow')
-
+            # ==========================================
             # === 1. 獲利能力 ===
+            # ==========================================
+
+            # Gross Margin
             if revenue > 0 and not pd.isna(gross_profit):
-                ratios_to_save.append((stock_id, year, 'profitability', 'Gross Margin', gross_profit/revenue, 'Gross/Rev'))
+                calc_val = gross_profit/revenue
+                final_val = get_ratio_value('Gross Margin', calc_val)
+                ratios_to_save.append((stock_id, year, 'profitability', 'Gross Margin', final_val, 'Hybrid'))
+
+            # Operating Margin
             if revenue > 0 and not pd.isna(op_income):
-                ratios_to_save.append((stock_id, year, 'profitability', 'Operating Margin', op_income/revenue, 'Op/Rev'))
+                calc_val = op_income/revenue
+                final_val = get_ratio_value('Operating Margin', calc_val)
+                ratios_to_save.append((stock_id, year, 'profitability', 'Operating Margin', final_val, 'Hybrid'))
+
+            # Net Profit Margin
             if revenue > 0 and not pd.isna(net_income):
-                ratios_to_save.append((stock_id, year, 'profitability', 'Net Profit Margin', net_income/revenue, 'Net/Rev'))
+                calc_val = net_income/revenue
+                final_val = get_ratio_value('Net Profit Margin', calc_val)
+                ratios_to_save.append((stock_id, year, 'profitability', 'Net Profit Margin', final_val, 'Hybrid'))
+            
+            # ROE (這就是您提到的 8.15% vs 8.9% 的關鍵修正)
             if total_equity > 0 and not pd.isna(net_income):
-                ratios_to_save.append((stock_id, year, 'profitability', 'Return on Equity (ROE)', net_income/total_equity, 'Net/Equity'))
+                calc_val = net_income/total_equity
+                final_val = get_ratio_value('Return on Equity (ROE)', calc_val)
+                ratios_to_save.append((stock_id, year, 'profitability', 'Return on Equity (ROE)', final_val, 'Hybrid'))
+
+            # ROIC (Yahoo 通常只有 ROA，ROIC 還是得自算)
             if invested_capital > 0 and not pd.isna(net_income): 
                 ratios_to_save.append((stock_id, year, 'profitability', 'ROIC', net_income/invested_capital, 'Net/IC'))
 
+            # ==========================================
             # === 2. 槓桿與流動性 ===
+            # ==========================================
+
+            # Debt-to-Equity
             if total_equity > 0 and not pd.isna(total_debt):
-                ratios_to_save.append((stock_id, year, 'leverage', 'Debt-to-Equity Ratio', total_debt/total_equity, 'Debt/Equity'))
+                calc_val = total_debt/total_equity
+                final_val = get_ratio_value('Debt-to-Equity Ratio', calc_val)
+                ratios_to_save.append((stock_id, year, 'leverage', 'Debt-to-Equity Ratio', final_val, 'Hybrid'))
+            
+            # Current Ratio
+            if current_liabilities > 0 and not pd.isna(current_assets):
+                calc_val = current_assets/current_liabilities
+                final_val = get_ratio_value('Current Ratio', calc_val)
+                ratios_to_save.append((stock_id, year, 'leverage', 'Current Ratio', final_val, 'Hybrid'))
+
+            # 利息保障倍數 (Yahoo Info 較少直接提供，維持自算)
+            interest_expense = get_val(df_income, year, 'Interest Expense')
             if interest_expense > 0 and not pd.isna(op_income):
                 ratios_to_save.append((stock_id, year, 'leverage', 'Interest Coverage Ratio', op_income/interest_expense, 'Op/Int'))
-            if current_liabilities > 0 and not pd.isna(current_assets):
-                ratios_to_save.append((stock_id, year, 'leverage', 'Current Ratio', current_assets/current_liabilities, 'CA/CL'))
+
+            # Net Debt / EBITDA (維持自算)
+            ebitda = get_val(df_income, year, 'EBITDA')
+            net_debt = get_val(df_balance, year, 'Net Debt')
             if ebitda > 0 and not pd.isna(net_debt):
                 ratios_to_save.append((stock_id, year, 'leverage', 'Net Debt / EBITDA', net_debt/ebitda, 'NetDebt/EBITDA'))
 
-            # === 3. 經營效率 ===
+            # ==========================================
+            # === 3. 經營效率 (維持自算) ===
+            # ==========================================
+            # 這些項目 Yahoo Info 比較少直接給，維持自算確保趨勢圖連貫
+            
+            total_assets = get_val(df_balance, year, 'Total Assets')
+            inventory = get_val(df_balance, year, 'Inventory')
+            cost_of_revenue = get_val(df_income, year, 'Cost Of Revenue')
+            accounts_receivable = get_val(df_balance, year, 'Accounts Receivable')
+
             if total_assets > 0 and not pd.isna(revenue):
                 ratios_to_save.append((stock_id, year, 'efficiency', 'Asset Turnover', revenue/total_assets, 'Rev/Assets'))
             if inventory > 0 and not pd.isna(cost_of_revenue):
@@ -212,31 +313,43 @@ def calculate_financial_ratios(stock_id, conn):
             if accounts_receivable > 0 and not pd.isna(revenue):
                 ratios_to_save.append((stock_id, year, 'efficiency', 'Receivables Turnover', revenue/accounts_receivable, 'Rev/AR'))
 
-            # === 4. 成長性 ===
+            # ==========================================
+            # === 4. 成長性 (混合) ===
+            # ==========================================
+            
             prev_year = year - 1
             if prev_year in df_income.index:
                 try:
                     prev_revenue = get_val(df_income, prev_year, 'Total Revenue')
                     prev_net_income = get_val(df_income, prev_year, 'Net Income')
                     prev_eps = get_val(df_income, prev_year, 'Basic EPS')
-
-                    if prev_revenue > 0 and not pd.isna(revenue):
-                        growth = (revenue - prev_revenue) / prev_revenue
-                        ratios_to_save.append((stock_id, year, 'growth', 'Revenue Growth', growth, '(Rev - PrevRev)/PrevRev'))
+                    basic_eps = get_val(df_income, year, 'Basic EPS')
                     
+                    # 營收成長
+                    if prev_revenue > 0 and not pd.isna(revenue):
+                        calc_val = (revenue - prev_revenue) / prev_revenue
+                        # Yahoo 的 revenueGrowth 通常是 Quarterly YoY，可能與年度成長不同
+                        # 但如果您希望看到截圖上的 -4.10%，這裡可以開啟混合模式
+                        ratios_to_save.append((stock_id, year, 'growth', 'Revenue Growth', calc_val, 'Hybrid'))
+                    
+                    # 淨利成長
                     if prev_net_income != 0 and not pd.isna(net_income) and not pd.isna(prev_net_income):
                         growth = (net_income - prev_net_income) / abs(prev_net_income)
                         ratios_to_save.append((stock_id, year, 'growth', 'Net Income Growth', growth, '(NI - PrevNI)/abs(PrevNI)'))
 
+                    # EPS 成長
                     if not pd.isna(basic_eps) and not pd.isna(prev_eps) and prev_eps != 0:
                         growth = (basic_eps - prev_eps) / abs(prev_eps)
                         ratios_to_save.append((stock_id, year, 'growth', 'EPS Growth', growth, '(EPS - PrevEPS)/abs(PrevEPS)'))
 
+                    # FCF 成長 (維持自算)
                     if prev_year in df_cashflow.index:
                         prev_fcf = get_val(df_cashflow, prev_year, 'Free Cash Flow')
+                        fcf = get_val(df_cashflow, year, 'Free Cash Flow')
                         if not pd.isna(fcf) and not pd.isna(prev_fcf) and prev_fcf != 0:
                             growth = (fcf - prev_fcf) / abs(prev_fcf)
                             ratios_to_save.append((stock_id, year, 'growth', 'FCF Growth', growth, '(FCF - PrevFCF)/abs(PrevFCF)'))
+                            
                 except KeyError: pass
 
         except KeyError:
@@ -385,6 +498,104 @@ def run_advanced_valuation(ticker):
     return calculate_dcf(ticker, coe, fcf_ftm)
 
 # ==========================================
+# 3.5. 同學的 AI 分析模組 (整合區)
+# ==========================================
+
+def get_competitor_dataframe_markdown(stock_id):
+    """
+    功能：抓取目標公司與競爭對手的財務數據，並轉為 Markdown 表格
+    """
+    try:
+        ticker = stock_id
+        shell = yf.Ticker(ticker)
+        info = shell.info
+        
+        # 如果抓不到 industryKey，無法比較，回傳 None
+        if 'industryKey' not in info:
+            return None, None
+
+        # 1. 建立目標公司的數據 List (使用 .get 避免缺漏報錯)
+        target_list = [
+            ticker, 
+            info.get('dividendYield', 0), info.get('trailingPE', 0), info.get('priceToSalesTrailing12Months', 0),
+            info.get('profitMargins', 0), info.get('priceToBook', 0), info.get('trailingEps', 0),
+            info.get('enterpriseToEbitda', 0), info.get('currentRatio', 0), info.get('debtToEquity', 0),
+            info.get('returnOnAssets', 0), info.get('returnOnEquity', 0), info.get('trailingPegRatio', 0)
+        ]
+
+        # 2. 找出競爭對手 (取前 4 名)
+        industry = yf.Industry(info['industryKey'])
+        competitors = list(industry.top_companies.index.values)[:4] 
+        
+        columns = ['Ticker', 'Dividend Yield', 'Trailing PE', 'TTM PS', 'Profit Margin', 'PB Ratio', 
+                   'Trailing EPS', 'EV/EBITDA', 'Current Ratio', 'Debt-to-Equity', 'ROA', 'ROE', 'PEG Ratio']
+        
+        compare_df = pd.DataFrame([target_list], columns=columns)
+
+        # 3. 抓取競爭者數據
+        for comp in competitors:
+            try:
+                comp_info = yf.Ticker(comp).info
+                comp_list = [
+                    comp, 
+                    comp_info.get('dividendYield', 0), comp_info.get('trailingPE', 0), comp_info.get('priceToSalesTrailing12Months', 0),
+                    comp_info.get('profitMargins', 0), comp_info.get('priceToBook', 0), comp_info.get('trailingEps', 0),
+                    comp_info.get('enterpriseToEbitda', 0), comp_info.get('currentRatio', 0), comp_info.get('debtToEquity', 0),
+                    comp_info.get('returnOnAssets', 0), comp_info.get('returnOnEquity', 0), comp_info.get('trailingPegRatio', 0)
+                ]
+                compare_df.loc[len(compare_df)] = comp_list
+            except Exception as e:
+                print(f"Skipping competitor {comp}: {e}")
+
+        # 4. 轉成 Markdown
+        compare_df = compare_df.round(4)
+        return compare_df.to_markdown(index=False), info.get('longBusinessSummary', '')
+
+    except Exception as e:
+        print(f"Error getting competitor data: {e}")
+        return None, None
+
+async def run_ai_analysis_agent(stock_id, summary, comparison_markdown):
+    """
+    功能：執行 Google ADK Agent 進行分析
+    """
+    # 1. 新聞分析 Agent
+    print(f"--- AI Agent: Analyzing News for {stock_id} ---")
+    google_news_agent = Agent(
+        name="GoogleNewsAgent",
+        model="gemini-2.5-pro",
+        instruction="""You are a specialized news arrange agent for a given company. Your job is to read the company's summary and use Google Search 
+        to find news relate to the company and generate comment with some important points that might affect the company's stock price.""",
+        tools=[google_search],
+        output_key="google_news_arrangement",
+    )
+    
+    news_runner = InMemoryRunner(agent=google_news_agent)
+    news_prompt = f"{stock_id} summary: \n\n{summary}"
+    
+    # 注意：這裡使用 await
+    news_response = await news_runner.run_debug(news_prompt)
+    news_text = str(news_response) # 確保轉為字串
+
+    # 2. 競爭者分析 Agent
+    print(f"--- AI Agent: Analyzing Competitors for {stock_id} ---")
+    competitors_agent = Agent(
+        name="CompetitorsAgent",
+        model="gemini-2.5-flash",
+        instruction="""You are a specialized agent to compare the target company to its competitors. Your job is to analyse the financial ratio for 
+        the given company and its competitors. Finally summary the most important points and provide some insights that might affect the target 
+        companies' stock price.""",
+        output_key="comparing_competitors",
+    )
+
+    comp_runner = InMemoryRunner(agent=competitors_agent)
+    comp_prompt = f"Please analyze the following financial data for {stock_id} and its competitors:\n\n{comparison_markdown}"
+    comp_response = await comp_runner.run_debug(comp_prompt)
+    comp_text = str(comp_response)
+
+    return news_text, comp_text
+
+# ==========================================
 # 4. Agent API & Logic
 # ==========================================
 
@@ -467,3 +678,75 @@ def agent_chat(req: ChatRequest):
         
     except Exception as e:
         return {"status": "error", "message": f"Error: {str(e)}"}
+    
+
+@app.post("/api/analyze_ai/{stock_id}")
+async def analyze_stock_ai(stock_id: str):
+    """
+    觸發同學寫的 AI 分析功能，並存入資料庫
+    """
+    stock_id = stock_id.upper()
+    conn = get_db_connection()
+    
+    # 1. 準備數據 (yfinance & Markdown)
+    print(f"正在準備 {stock_id} 的 AI 分析數據...")
+    comparison_md, summary = get_competitor_dataframe_markdown(stock_id)
+    
+    if not comparison_md or not summary:
+        conn.close()
+        return {"status": "error", "message": "無法取得 Yahoo Finance 數據或競爭者資料"}
+
+    # 2. 執行 AI 分析 (這可能會花幾秒鐘)
+    try:
+        # 呼叫剛剛定義的 async 函式
+        news_analysis, competitor_analysis = await run_ai_analysis_agent(stock_id, summary, comparison_md)
+    except Exception as e:
+        conn.close()
+        return {"status": "error", "message": f"AI 模型執行失敗: {str(e)}"}
+
+    # 3. 存入資料庫
+    today = dt.date.today().strftime("%Y-%m-%d")
+    cursor = conn.cursor()
+    
+    # 使用 INSERT OR REPLACE 確保同一天重複按按鈕會更新
+    cursor.execute('''
+        INSERT OR REPLACE INTO AIReports (Stock_Id, ReportDate, NewsAnalysis, CompetitorAnalysis)
+        VALUES (?, ?, ?, ?)
+    ''', (stock_id, today, news_analysis, competitor_analysis))
+    
+    conn.commit()
+    conn.close()
+    
+    return {
+        "status": "success", 
+        "data": {
+            "news_analysis": news_analysis,
+            "competitor_analysis": competitor_analysis
+        }
+    }
+
+@app.get("/api/get_ai_report/{stock_id}")
+def get_ai_report(stock_id: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # 抓取最新的一份報告
+    cursor.execute('''
+        SELECT ReportDate, NewsAnalysis, CompetitorAnalysis 
+        FROM AIReports 
+        WHERE Stock_Id = ? 
+        ORDER BY ReportDate DESC 
+        LIMIT 1
+    ''', (stock_id.upper(),))
+    
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return {
+            "date": row[0],
+            "news_analysis": row[1],
+            "competitor_analysis": row[2]
+        }
+    else:
+        return {"message": "尚無分析報告"}
